@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import glob
+import yaml
 from typing import Any, Dict, List, Set, Optional, Union, Tuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -116,33 +117,24 @@ class HugoContentManager:
             return {}, content
             
         front_matter_text = match.group(1)
-        meta = {}
         
-        for line in front_matter_text.split('\n'):
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-                
-            if ':' in line:
-                key, value = line.split(':', 1)
-                key = key.strip()
-                value = value.strip()
-                
-                # Handle lists in YAML (e.g., tags)
-                if value.startswith('[') and value.endswith(']'):
-                    value = [item.strip().strip('"\'') for item in value[1:-1].split(',')]
-                
-                # Handle quoted strings
-                elif (value.startswith('"') and value.endswith('"')) or \
-                     (value.startswith("'") and value.endswith("'")):
-                    value = value[1:-1]
-                    
-                meta[key] = value
+        # Use PyYAML to properly parse the front matter
+        try:
+            meta = yaml.safe_load(front_matter_text) or {}
+        except Exception as e:
+            debug_print(f"YAML parsing error: {e}")
+            meta = {}
         
-        # Special handling to normalize tags
-        if 'tags' in meta:
-            meta['tags'] = self._normalize_tags(meta['tags'])
-        
+        # Ensure meta is a dictionary
+        if not isinstance(meta, dict):
+            debug_print(f"Front matter did not parse as a dictionary: {type(meta)}")
+            meta = {}
+            
+        # Ensure tags are always in list format
+        if 'tags' in meta and meta['tags'] is not None:
+            if not isinstance(meta['tags'], list):
+                meta['tags'] = [meta['tags']]
+                
         # Extract the actual content (everything after front matter)
         data = content[match.end():]
         
