@@ -34,7 +34,10 @@ class ContentFile:
                 pass
         
         try:
-            return datetime.fromtimestamp(os.path.getmtime(self.path))
+            # Get modification time as naive datetime (assumed UTC)
+            mod_time = datetime.fromtimestamp(os.path.getmtime(self.path))
+            # Return as naive datetime for consistent comparison
+            return mod_time
         except OSError:
             return None
 
@@ -187,7 +190,16 @@ class HugoContentManager:
         debug_print(f"Found {len(matches)} files with tag '{tag}'")
         
         # Sort by date (most recent first)
-        matches.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
+        def get_sort_key(content_file):
+            date = content_file.date
+            if date is None:
+                return datetime.min
+            # Make date naive if it has timezone info
+            if hasattr(date, 'tzinfo') and date.tzinfo is not None:
+                date = date.replace(tzinfo=None)
+            return date
+            
+        matches.sort(key=get_sort_key, reverse=True)
         
         return matches[:limit]
     
@@ -204,7 +216,16 @@ class HugoContentManager:
         debug_print(f"Found {len(matches)} files containing '{query}'")
         
         # Sort by date (most recent first)
-        matches.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
+        def get_sort_key(content_file):
+            date = content_file.date
+            if date is None:
+                return datetime.min
+            # Make date naive if it has timezone info
+            if hasattr(date, 'tzinfo') and date.tzinfo is not None:
+                date = date.replace(tzinfo=None)
+            return date
+            
+        matches.sort(key=get_sort_key, reverse=True)
         
         return matches[:limit]
 
@@ -237,12 +258,24 @@ class HugoContentManager:
         for _, content_file in self.path_to_content.items():
             raw_tags = content_file.meta.get('tags', [])
             tags = self._normalize_tags(raw_tags)
-            post_date = content_file.date or datetime.min
+            post_date = content_file.date
             
             for tag in tags:
                 if tag in tag_info:
                     count, latest_date = tag_info[tag]
-                    tag_info[tag] = (count + 1, max(latest_date, post_date))
+                    # Handle the case where either date might be None
+                    if latest_date is None:
+                        new_latest = post_date
+                    elif post_date is None:
+                        new_latest = latest_date
+                    else:
+                        # Make both dates naive if they're not already
+                        if hasattr(latest_date, 'tzinfo') and latest_date.tzinfo is not None:
+                            latest_date = latest_date.replace(tzinfo=None)
+                        if hasattr(post_date, 'tzinfo') and post_date.tzinfo is not None:
+                            post_date = post_date.replace(tzinfo=None)
+                        new_latest = max(latest_date, post_date)
+                    tag_info[tag] = (count + 1, new_latest)
                 else:
                     tag_info[tag] = (1, post_date)
         
@@ -250,7 +283,18 @@ class HugoContentManager:
         result = [(tag, count, date) for tag, (count, date) in tag_info.items()]
         
         # Sort by count (descending) and then by date (most recent first)
-        result.sort(key=lambda x: (-x[1], x[2] if x[2] else datetime.min), reverse=True)
+        # Make all dates naive for comparison
+        def get_sort_key(item):
+            count = item[1]
+            date = item[2]
+            if date is None:
+                return (-count, datetime.min)
+            # Make date naive if it has timezone info
+            if hasattr(date, 'tzinfo') and date.tzinfo is not None:
+                date = date.replace(tzinfo=None)
+            return (-count, date)
+            
+        result.sort(key=get_sort_key, reverse=True)
         
         debug_print(f"Collected statistics for {len(result)} tags")
         return result
@@ -291,13 +335,36 @@ class HugoContentManager:
         debug_print(f"Searching for posts between {start_date} and {end_date}")
         for _, content_file in self.path_to_content.items():
             post_date = content_file.date
-            if post_date and start_date <= post_date <= end_date:
-                matches.append(content_file)
+            if post_date:
+                # Make date naive for comparison if it has timezone info
+                if hasattr(post_date, 'tzinfo') and post_date.tzinfo is not None:
+                    post_date = post_date.replace(tzinfo=None)
+                
+                # Make start and end dates naive for comparison
+                start_naive = start_date
+                if hasattr(start_naive, 'tzinfo') and start_naive.tzinfo is not None:
+                    start_naive = start_naive.replace(tzinfo=None)
+                    
+                end_naive = end_date
+                if hasattr(end_naive, 'tzinfo') and end_naive.tzinfo is not None:
+                    end_naive = end_naive.replace(tzinfo=None)
+                
+                if start_naive <= post_date <= end_naive:
+                    matches.append(content_file)
         
         debug_print(f"Found {len(matches)} posts within date range")
         
         # Sort by date (most recent first)
-        matches.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
+        def get_sort_key(content_file):
+            date = content_file.date
+            if date is None:
+                return datetime.min
+            # Make date naive if it has timezone info
+            if hasattr(date, 'tzinfo') and date.tzinfo is not None:
+                date = date.replace(tzinfo=None)
+            return date
+            
+        matches.sort(key=get_sort_key, reverse=True)
         
         return matches[:limit]
 
@@ -335,7 +402,19 @@ def format_tags_for_output(tags: List[Tuple[str, int, Optional[datetime]]]) -> s
     result.append("Tags (by post count and most recent post):")
     
     for tag, count, date in tags:
-        date_str = date.strftime("%Y-%m-%d") if date and date != datetime.min else "Unknown"
+        if date is None:
+            date_str = "Unknown"
+        else:
+            # Strip timezone info for display if present
+            if hasattr(date, 'tzinfo') and date.tzinfo is not None:
+                date = date.replace(tzinfo=None)
+            
+            # Only use date part for display
+            if date != datetime.min:
+                date_str = date.strftime("%Y-%m-%d")
+            else:
+                date_str = "Unknown"
+                
         result.append(f"- {tag}: {count} posts, most recent: {date_str}")
     
     return "\n".join(result)
@@ -454,8 +533,9 @@ async def get_by_date_range(start_date: str, end_date: str, limit: int = 50) -> 
     
     try:
         # Parse dates with time set to beginning/end of day
-        start = datetime.fromisoformat(f"{start_date}T00:00:00+00:00")
-        end = datetime.fromisoformat(f"{end_date}T23:59:59+00:00")
+        # Always create naive datetimes for consistent comparison
+        start = datetime.fromisoformat(f"{start_date}T00:00:00")
+        end = datetime.fromisoformat(f"{end_date}T23:59:59")
     except ValueError as e:
         return f"Error parsing dates: {e}. Please use ISO format (YYYY-MM-DD)."
     
