@@ -5,7 +5,7 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("weather")
 
 @mcp.tool()
-async def get_by_tag(tag: str, limit=50: int) -> str:
+async def get_by_tag(tag: str, limit: int = 50) -> str:
     """Get blog content by its tag.
 
     Args:
@@ -15,7 +15,7 @@ async def get_by_tag(tag: str, limit=50: int) -> str:
     return f"Tried to retrieve results for {tag}!"
 
 @mcp.tool()
-async def get_by_text(query: str, limit=50: int) -> str:
+async def get_by_text(query: str, limit: int = 50) -> str:
     """Get blog content by text in content.
 
     Args:
