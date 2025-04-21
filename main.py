@@ -8,6 +8,10 @@ from datetime import datetime
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+# Redirect all debug prints to stderr
+def debug_print(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
 
 @dataclass
 class ContentFile:
@@ -25,7 +29,7 @@ class ContentFile:
                     date_str += 'Z'  # Add UTC indicator if missing
                 return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
             except (ValueError, TypeError) as e:
-                print(f"Error parsing date: {e} for {self.path}")
+                debug_print(f"Error parsing date: {e} for {self.path}")
                 pass
         
         try:
@@ -48,7 +52,7 @@ class HugoContentManager:
         
         for content_dir in self.content_dirs:
             if not os.path.isdir(content_dir):
-                print(f"Warning: {content_dir} is not a valid directory, skipping")
+                debug_print(f"Warning: {content_dir} is not a valid directory, skipping")
                 continue
                 
             md_files = []
@@ -59,7 +63,7 @@ class HugoContentManager:
                         md_files.append(full_path)
             
             self.dir_to_files[content_dir] = md_files
-            print(f"Found {len(md_files)} markdown files in {content_dir}")
+            debug_print(f"Found {len(md_files)} markdown files in {content_dir}")
             
             for file_path in md_files:
                 try:
@@ -73,9 +77,9 @@ class HugoContentManager:
                         data=data
                     )
                 except Exception as e:
-                    print(f"Error processing {file_path}: {e}")
+                    debug_print(f"Error processing {file_path}: {e}")
         
-        print(f"Total files processed: {len(self.path_to_content)}")
+        debug_print(f"Total files processed: {len(self.path_to_content)}")
     
     def _normalize_tags(self, tags: Union[str, List, None]) -> List[str]:
         """Normalize tags to a list format regardless of input type"""
@@ -149,29 +153,29 @@ class HugoContentManager:
         matches = []
         tag_lower = tag.lower()
         
-        print(f"Searching for tag: '{tag_lower}'")
+        debug_print(f"Searching for tag: '{tag_lower}'")
         for file_path, content_file in self.path_to_content.items():
             raw_tags = content_file.meta.get('tags', [])
             tags = self._normalize_tags(raw_tags)
             
             # Debug
             if tags:
-                print(f"File: {os.path.basename(file_path)} - Tags: {tags}")
+                debug_print(f"File: {os.path.basename(file_path)} - Tags: {tags}")
             
             # Check for exact tag match (case insensitive)
             if any(tag_lower == t.lower() for t in tags):
-                print(f"Found exact tag match in {os.path.basename(file_path)}")
+                debug_print(f"Found exact tag match in {os.path.basename(file_path)}")
                 matches.append(content_file)
                 continue
             
             # Check if the tag is part of a tag
             for t in tags:
                 if tag_lower in t.lower():
-                    print(f"Found partial tag match in {os.path.basename(file_path)}: '{t}'")
+                    debug_print(f"Found partial tag match in {os.path.basename(file_path)}: '{t}'")
                     matches.append(content_file)
                     break
         
-        print(f"Found {len(matches)} files with tag '{tag}'")
+        debug_print(f"Found {len(matches)} files with tag '{tag}'")
         
         # Sort by date (most recent first)
         matches.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
@@ -183,12 +187,12 @@ class HugoContentManager:
         matches = []
         query_lower = query.lower()
         
-        print(f"Searching for text: '{query}'")
+        debug_print(f"Searching for text: '{query}'")
         for file_path, content_file in self.path_to_content.items():
             if query_lower in content_file.data.lower():
                 matches.append(content_file)
         
-        print(f"Found {len(matches)} files containing '{query}'")
+        debug_print(f"Found {len(matches)} files containing '{query}'")
         
         # Sort by date (most recent first)
         matches.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
@@ -261,21 +265,21 @@ async def rebuild() -> bool:
     if content_manager is None:
         return False
     
-    print("Rebuilding content index...")
+    debug_print("Rebuilding content index...")
     content_manager.load_content()
-    print("Content index rebuilt successfully")
+    debug_print("Content index rebuilt successfully")
     return True
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python script.py <content_dir1> [<content_dir2> ...]")
+        debug_print("Usage: python script.py <content_dir1> [<content_dir2> ...]")
         sys.exit(1)
     
     content_dirs = sys.argv[1:]
-    print(f"Loading content from directories: {', '.join(content_dirs)}")
+    debug_print(f"Loading content from directories: {', '.join(content_dirs)}")
     
     content_manager = HugoContentManager(content_dirs)
-    print(f"Loaded {len(content_manager.path_to_content)} markdown files")
+    debug_print(f"Loaded {len(content_manager.path_to_content)} markdown files")
     
     mcp.run(transport='stdio')
