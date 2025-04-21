@@ -38,6 +38,23 @@ class ContentFile:
         except OSError:
             return None
 
+    @property
+    def slug(self) -> str:
+        """Extract slug from metadata or from filename"""
+        if 'slug' in self.meta:
+            return str(self.meta['slug'])
+        
+        # Extract from filename (basename without extension)
+        filename = os.path.basename(self.path)
+        return os.path.splitext(filename)[0]
+
+    @property
+    def url(self) -> Optional[str]:
+        """Extract URL from metadata if available"""
+        if 'url' in self.meta:
+            return str(self.meta['url'])
+        return None
+
 
 class HugoContentManager:
     def __init__(self, content_dirs: List[str]):
@@ -191,6 +208,99 @@ class HugoContentManager:
         
         return matches[:limit]
 
+    def search_tags(self, tag_query: str, limit: int = 20) -> List[str]:
+        """Search for tags matching the provided query"""
+        all_tags = set()
+        tag_query_lower = tag_query.lower()
+        
+        debug_print(f"Searching for tags containing: '{tag_query_lower}'")
+        for _, content_file in self.path_to_content.items():
+            raw_tags = content_file.meta.get('tags', [])
+            tags = self._normalize_tags(raw_tags)
+            
+            # Add tags that match the query
+            for tag in tags:
+                if tag_query_lower in tag.lower():
+                    all_tags.add(tag)
+        
+        # Convert to list and sort alphabetically
+        tag_list = sorted(list(all_tags))
+        debug_print(f"Found {len(tag_list)} tags matching '{tag_query_lower}'")
+        
+        return tag_list[:limit]
+    
+    def list_all_tags(self) -> List[Tuple[str, int, Optional[datetime]]]:
+        """List all tags with their post count and most recent post date"""
+        tag_info: Dict[str, Tuple[int, Optional[datetime]]] = {}
+        
+        debug_print("Collecting tag statistics...")
+        for _, content_file in self.path_to_content.items():
+            raw_tags = content_file.meta.get('tags', [])
+            tags = self._normalize_tags(raw_tags)
+            post_date = content_file.date or datetime.min
+            
+            for tag in tags:
+                if tag in tag_info:
+                    count, latest_date = tag_info[tag]
+                    tag_info[tag] = (count + 1, max(latest_date, post_date))
+                else:
+                    tag_info[tag] = (1, post_date)
+        
+        # Convert to list of tuples (tag, count, latest_date)
+        result = [(tag, count, date) for tag, (count, date) in tag_info.items()]
+        
+        # Sort by count (descending) and then by date (most recent first)
+        result.sort(key=lambda x: (-x[1], x[2] if x[2] else datetime.min), reverse=True)
+        
+        debug_print(f"Collected statistics for {len(result)} tags")
+        return result
+    
+    def get_by_slug_or_url(self, identifier: str) -> Optional[ContentFile]:
+        """Find a post by its slug or URL"""
+        identifier_lower = identifier.lower()
+        
+        debug_print(f"Searching for post with slug or URL: '{identifier}'")
+        
+        # First check for exact URL match (case insensitive)
+        for _, content_file in self.path_to_content.items():
+            url = content_file.url
+            if url and url.lower() == identifier_lower:
+                debug_print(f"Found exact URL match: {url}")
+                return content_file
+        
+        # Then check for exact slug match (case insensitive)
+        for _, content_file in self.path_to_content.items():
+            slug = content_file.slug
+            if slug.lower() == identifier_lower:
+                debug_print(f"Found exact slug match: {slug}")
+                return content_file
+        
+        # Try partial path match if no exact matches found
+        for path, content_file in self.path_to_content.items():
+            if identifier_lower in path.lower():
+                debug_print(f"Found partial path match: {path}")
+                return content_file
+        
+        debug_print(f"No post found for '{identifier}'")
+        return None
+    
+    def get_by_date_range(self, start_date: datetime, end_date: datetime, limit: int = 50) -> List[ContentFile]:
+        """Find all posts within a date range"""
+        matches = []
+        
+        debug_print(f"Searching for posts between {start_date} and {end_date}")
+        for _, content_file in self.path_to_content.items():
+            post_date = content_file.date
+            if post_date and start_date <= post_date <= end_date:
+                matches.append(content_file)
+        
+        debug_print(f"Found {len(matches)} posts within date range")
+        
+        # Sort by date (most recent first)
+        matches.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
+        
+        return matches[:limit]
+
 
 def format_content_for_output(content_files: List[ContentFile]) -> str:
     """Format the content files for output"""
@@ -212,6 +322,21 @@ def format_content_for_output(content_files: List[ContentFile]) -> str:
         # Add separator between entries, but not after the last one
         if i < len(content_files) - 1:
             result.append("-" * 50)
+    
+    return "\n".join(result)
+
+
+def format_tags_for_output(tags: List[Tuple[str, int, Optional[datetime]]]) -> str:
+    """Format tag information for output"""
+    if not tags:
+        return "No tags found."
+    
+    result = []
+    result.append("Tags (by post count and most recent post):")
+    
+    for tag, count, date in tags:
+        date_str = date.strftime("%Y-%m-%d") if date and date != datetime.min else "Unknown"
+        result.append(f"- {tag}: {count} posts, most recent: {date_str}")
     
     return "\n".join(result)
 
@@ -261,6 +386,81 @@ async def rebuild() -> bool:
     content_manager.load_content()
     debug_print("Content index rebuilt successfully")
     return True
+
+
+@mcp.tool()
+async def search_tags(tag_query: str, limit: int = 20) -> str:
+    """Search for tags matching the provided query.
+    
+    Args:
+        tag_query: partial or full tag name to search for
+        limit: the maximum number of tags to return
+    """
+    if content_manager is None:
+        return "Content has not been loaded. Please ensure the server is properly initialized."
+    
+    matching_tags = content_manager.search_tags(tag_query, limit)
+    
+    if not matching_tags:
+        return f"No tags found matching '{tag_query}'."
+    
+    result = [f"Tags matching '{tag_query}':"]
+    for tag in matching_tags:
+        result.append(f"- {tag}")
+    
+    return "\n".join(result)
+
+
+@mcp.tool()
+async def list_all_tags() -> str:
+    """List all tags sorted by number of posts and most recent post."""
+    if content_manager is None:
+        return "Content has not been loaded. Please ensure the server is properly initialized."
+    
+    tag_info = content_manager.list_all_tags()
+    return format_tags_for_output(tag_info)
+
+
+@mcp.tool()
+async def get_by_slug_or_url(identifier: str) -> str:
+    """Get a post by its slug or URL.
+    
+    Args:
+        identifier: the slug, URL, or path fragment to search for
+    """
+    if content_manager is None:
+        return "Content has not been loaded. Please ensure the server is properly initialized."
+    
+    post = content_manager.get_by_slug_or_url(identifier)
+    
+    if post is None:
+        return f"No post found with slug or URL matching '{identifier}'."
+    
+    # Format as a list to reuse format_content_for_output
+    return format_content_for_output([post])
+
+
+@mcp.tool()
+async def get_by_date_range(start_date: str, end_date: str, limit: int = 50) -> str:
+    """Get posts published within a date range.
+    
+    Args:
+        start_date: the start date in ISO format (YYYY-MM-DD)
+        end_date: the end date in ISO format (YYYY-MM-DD)
+        limit: the maximum number of posts to return
+    """
+    if content_manager is None:
+        return "Content has not been loaded. Please ensure the server is properly initialized."
+    
+    try:
+        # Parse dates with time set to beginning/end of day
+        start = datetime.fromisoformat(f"{start_date}T00:00:00+00:00")
+        end = datetime.fromisoformat(f"{end_date}T23:59:59+00:00")
+    except ValueError as e:
+        return f"Error parsing dates: {e}. Please use ISO format (YYYY-MM-DD)."
+    
+    posts = content_manager.get_by_date_range(start, end, limit)
+    return format_content_for_output(posts)
 
 
 if __name__ == "__main__":
