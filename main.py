@@ -2,7 +2,7 @@ import os
 import re
 import sys
 import glob
-from typing import Any, Dict, List, Set, Optional
+from typing import Any, Dict, List, Set, Optional, Union, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 import httpx
@@ -20,8 +20,12 @@ class ContentFile:
         """Extract date from metadata or fallback to file modification time"""
         if 'date' in self.meta:
             try:
-                return datetime.fromisoformat(self.meta['date'].replace('Z', '+00:00'))
-            except (ValueError, TypeError):
+                date_str = str(self.meta['date'])
+                if 'T' in date_str and not date_str.endswith('Z') and '+' not in date_str:
+                    date_str += 'Z'  # Add UTC indicator if missing
+                return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            except (ValueError, TypeError) as e:
+                print(f"Error parsing date: {e} for {self.path}")
                 pass
         
         try:
@@ -55,6 +59,7 @@ class HugoContentManager:
                         md_files.append(full_path)
             
             self.dir_to_files[content_dir] = md_files
+            print(f"Found {len(md_files)} markdown files in {content_dir}")
             
             for file_path in md_files:
                 try:
@@ -69,8 +74,36 @@ class HugoContentManager:
                     )
                 except Exception as e:
                     print(f"Error processing {file_path}: {e}")
+        
+        print(f"Total files processed: {len(self.path_to_content)}")
     
-    def _parse_markdown(self, content: str) -> tuple[Dict[str, Any], str]:
+    def _normalize_tags(self, tags: Union[str, List, None]) -> List[str]:
+        """Normalize tags to a list format regardless of input type"""
+        if tags is None:
+            return []
+            
+        if isinstance(tags, list):
+            return [str(tag).strip() for tag in tags]
+            
+        if isinstance(tags, str):
+            # If it looks like a YAML list
+            if tags.startswith('[') and tags.endswith(']'):
+                inner = tags[1:-1].strip()
+                if not inner:
+                    return []
+                return [tag.strip().strip('\'"') for tag in inner.split(',')]
+            
+            # If it's a comma-separated string
+            if ',' in tags:
+                return [tag.strip() for tag in tags.split(',')]
+            
+            # Single tag
+            return [tags.strip()]
+            
+        # Any other type, convert to string and return as single item
+        return [str(tags)]
+    
+    def _parse_markdown(self, content: str) -> Tuple[Dict[str, Any], str]:
         """Parse markdown content, separating front matter from content"""
         front_matter_pattern = r"^---\s*\n(.*?)\n---\s*\n"
         match = re.search(front_matter_pattern, content, re.DOTALL)
@@ -102,6 +135,10 @@ class HugoContentManager:
                     
                 meta[key] = value
         
+        # Special handling to normalize tags
+        if 'tags' in meta:
+            meta['tags'] = self._normalize_tags(meta['tags'])
+        
         # Extract the actual content (everything after front matter)
         data = content[match.end():]
         
@@ -110,16 +147,31 @@ class HugoContentManager:
     def get_by_tag(self, tag: str, limit: int = 50) -> List[ContentFile]:
         """Find all files with a given tag"""
         matches = []
+        tag_lower = tag.lower()
         
+        print(f"Searching for tag: '{tag_lower}'")
         for file_path, content_file in self.path_to_content.items():
-            tags = content_file.meta.get('tags', [])
+            raw_tags = content_file.meta.get('tags', [])
+            tags = self._normalize_tags(raw_tags)
             
-            # Handle both list and string formats for tags
-            if isinstance(tags, str):
-                tags = [tag.strip() for tag in tags.split(',')]
+            # Debug
+            if tags:
+                print(f"File: {os.path.basename(file_path)} - Tags: {tags}")
             
-            if tag.lower() in [t.lower() for t in tags]:
+            # Check for exact tag match (case insensitive)
+            if any(tag_lower == t.lower() for t in tags):
+                print(f"Found exact tag match in {os.path.basename(file_path)}")
                 matches.append(content_file)
+                continue
+            
+            # Check if the tag is part of a tag
+            for t in tags:
+                if tag_lower in t.lower():
+                    print(f"Found partial tag match in {os.path.basename(file_path)}: '{t}'")
+                    matches.append(content_file)
+                    break
+        
+        print(f"Found {len(matches)} files with tag '{tag}'")
         
         # Sort by date (most recent first)
         matches.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
@@ -129,10 +181,14 @@ class HugoContentManager:
     def get_by_text(self, query: str, limit: int = 50) -> List[ContentFile]:
         """Find all files containing the specified text"""
         matches = []
+        query_lower = query.lower()
         
+        print(f"Searching for text: '{query}'")
         for file_path, content_file in self.path_to_content.items():
-            if query.lower() in content_file.data.lower():
+            if query_lower in content_file.data.lower():
                 matches.append(content_file)
+        
+        print(f"Found {len(matches)} files containing '{query}'")
         
         # Sort by date (most recent first)
         matches.sort(key=lambda x: x.date if x.date else datetime.min, reverse=True)
@@ -142,26 +198,25 @@ class HugoContentManager:
 
 def format_content_for_output(content_files: List[ContentFile]) -> str:
     """Format the content files for output"""
+    if not content_files:
+        return "No matching content found."
+    
     result = []
     
-    for file in content_files:
+    for i, file in enumerate(content_files):
         result.append(f"File: {file.path}")
         result.append("Metadata:")
         for key, value in file.meta.items():
             result.append(f"  {key}: {value}")
         
-        # Add a preview of the content (first 200 chars)
-        preview = file.data.strip()[:200]
-        if len(file.data) > 200:
-            preview += "..."
-            
-        result.append("Content Preview:")
-        result.append(f"  {preview}")
-        result.append("-" * 50)
-    
-    if not result:
-        return "No matching content found."
+        # Include the full content
+        result.append("Content:")
+        result.append(file.data.strip())
         
+        # Add separator between entries, but not after the last one
+        if i < len(content_files) - 1:
+            result.append("-" * 50)
+    
     return "\n".join(result)
 
 
@@ -206,7 +261,9 @@ async def rebuild() -> bool:
     if content_manager is None:
         return False
     
+    print("Rebuilding content index...")
     content_manager.load_content()
+    print("Content index rebuilt successfully")
     return True
 
 
