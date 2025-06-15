@@ -1,4 +1,3 @@
-
 [library-mcp](https://github.com/lethain/library-mcp) is an MCP server for interacting with
 Markdown knowledge bases. Basically, folders that may or may not have subfolders, that include
 files with `.md` extension and start with metadata like:
@@ -15,10 +14,10 @@ files with `.md` extension and start with metadata like:
     Yesterday I was dreaming about...
 
 The typical workflow in the current verison is to
-retrieve recent content for a given tag, and then
-discuss using that tag:
+retrieve recent content for a given tag or tags, and then
+discuss using those tags:
 
-    Get the next 50 posts with tag "executive",
+    Get the next 50 posts with tags "executive" or "management",
     then tell me what I should do about this problem
     I am running into: ...
 
@@ -49,7 +48,7 @@ This MCP server exposes these tools.
 
 Tools for retrieving content into your context window:
 
-* `get_by_tag` - Retrieves content by tag
+* `get_by_tags` - Retrieves content by one or more tags (comma-separated)
 * `get_by_text` - Searches content for specific text
 * `get_by_slug_or_url` - Finds posts by slug or URL
 * `get_by_date_range` - Gets posts published within a date range
@@ -60,6 +59,7 @@ Tools for navigating your knowledge base:
 
 * `search_tags` - Searches for tags matching a query
 * `list_all_tags` - Lists all tags sorted by post count and recency
+* `semantic_similar_tags` - Finds conceptually similar tags using AI embeddings (requires optional dependencies)
 
 ### Maintenance Tools
 
@@ -105,3 +105,17 @@ It should work similarly on other platforms.
 
 5. Close Claude and reopen it.
 6. It should work...
+
+## Optional: Semantic Search
+
+To enable semantic tag search functionality, install the optional dependencies:
+
+```bash
+cd /Users/will/library-mcp
+uv pip install ".[semantic]"
+```
+
+This will install `sentence-transformers` which enables the `semantic_similar_tags` tool.
+This tool uses AI embeddings to find tags that are conceptually similar, even if they
+don't share the same text. For example, searching for "programming" might find tags
+like "coding", "development", or "software engineering".

@@ -8,6 +8,15 @@ from dataclasses import dataclass
 from datetime import datetime
 import httpx
 from mcp.server.fastmcp import FastMCP
+import numpy as np
+
+# Try to import sentence-transformers for semantic similarity
+try:
+    from sentence_transformers import SentenceTransformer
+    SEMANTIC_SEARCH_AVAILABLE = True
+except ImportError:
+    SEMANTIC_SEARCH_AVAILABLE = False
+    SentenceTransformer = None
 
 # Redirect all debug prints to stderr
 def debug_print(*args, **kwargs):
@@ -64,6 +73,23 @@ class HugoContentManager:
         self.content_dirs = content_dirs
         self.dir_to_files: Dict[str, List[str]] = {}
         self.path_to_content: Dict[str, ContentFile] = {}
+        
+        # Initialize semantic search components
+        self.semantic_model = None
+        self.tag_embeddings: Dict[str, np.ndarray] = {}
+        self.tag_to_text: Dict[str, str] = {}  # Store original tag text
+        
+        if SEMANTIC_SEARCH_AVAILABLE:
+            try:
+                debug_print("Initializing semantic search model...")
+                self.semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+                debug_print("Semantic search model loaded successfully")
+            except Exception as e:
+                debug_print(f"Failed to load semantic model: {e}")
+                self.semantic_model = None
+        else:
+            debug_print("Semantic search not available - install sentence-transformers for this feature")
+        
         self.load_content()
         
     def load_content(self) -> None:
@@ -101,6 +127,10 @@ class HugoContentManager:
                     debug_print(f"Error processing {file_path}: {e}")
         
         debug_print(f"Total files processed: {len(self.path_to_content)}")
+        
+        # Generate tag embeddings for semantic search
+        if self.semantic_model:
+            self._generate_tag_embeddings()
     
     def _normalize_tags(self, tags: Union[str, List, None]) -> List[str]:
         """Normalize tags to a list format regardless of input type"""
@@ -160,34 +190,48 @@ class HugoContentManager:
         
         return meta, data
     
-    def get_by_tag(self, tag: str, limit: int = 50) -> List[ContentFile]:
-        """Find all files with a given tag"""
+    def get_by_tags(self, tags: Union[str, List[str]], limit: int = 50) -> List[ContentFile]:
+        """Find all files with any of the given tags"""
+        # Normalize input to list
+        if isinstance(tags, str):
+            search_tags = [tags]
+        else:
+            search_tags = tags
+            
         matches = []
-        tag_lower = tag.lower()
+        search_tags_lower = [tag.lower() for tag in search_tags]
         
-        debug_print(f"Searching for tag: '{tag_lower}'")
+        debug_print(f"Searching for tags: {search_tags}")
         for file_path, content_file in self.path_to_content.items():
             raw_tags = content_file.meta.get('tags', [])
-            tags = self._normalize_tags(raw_tags)
+            file_tags = self._normalize_tags(raw_tags)
             
             # Debug
-            if tags:
-                debug_print(f"File: {os.path.basename(file_path)} - Tags: {tags}")
+            if file_tags:
+                debug_print(f"File: {os.path.basename(file_path)} - Tags: {file_tags}")
             
-            # Check for exact tag match (case insensitive)
-            if any(tag_lower == t.lower() for t in tags):
-                debug_print(f"Found exact tag match in {os.path.basename(file_path)}")
-                matches.append(content_file)
-                continue
-            
-            # Check if the tag is part of a tag
-            for t in tags:
-                if tag_lower in t.lower():
-                    debug_print(f"Found partial tag match in {os.path.basename(file_path)}: '{t}'")
+            # Check if any of the search tags match any file tags
+            matched = False
+            for search_tag in search_tags_lower:
+                # Check for exact tag match (case insensitive)
+                if any(search_tag == t.lower() for t in file_tags):
+                    debug_print(f"Found exact tag match '{search_tag}' in {os.path.basename(file_path)}")
                     matches.append(content_file)
+                    matched = True
+                    break
+                
+                # Check if the search tag is part of any file tag
+                for file_tag in file_tags:
+                    if search_tag in file_tag.lower():
+                        debug_print(f"Found partial tag match '{search_tag}' in tag '{file_tag}' in {os.path.basename(file_path)}")
+                        matches.append(content_file)
+                        matched = True
+                        break
+                
+                if matched:
                     break
         
-        debug_print(f"Found {len(matches)} files with tag '{tag}'")
+        debug_print(f"Found {len(matches)} files with tags {search_tags}")
         
         # Sort by date (most recent first)
         def get_sort_key(content_file):
@@ -298,6 +342,73 @@ class HugoContentManager:
         
         debug_print(f"Collected statistics for {len(result)} tags")
         return result
+    
+    def _generate_tag_embeddings(self) -> None:
+        """Generate embeddings for all unique tags"""
+        if not self.semantic_model:
+            return
+            
+        # Collect all unique tags
+        all_tags = set()
+        for _, content_file in self.path_to_content.items():
+            raw_tags = content_file.meta.get('tags', [])
+            tags = self._normalize_tags(raw_tags)
+            all_tags.update(tags)
+        
+        if not all_tags:
+            debug_print("No tags found to generate embeddings for")
+            return
+            
+        debug_print(f"Generating embeddings for {len(all_tags)} unique tags...")
+        
+        # Convert to list for batch encoding
+        tag_list = list(all_tags)
+        
+        try:
+            # Generate embeddings in batch
+            embeddings = self.semantic_model.encode(tag_list, convert_to_numpy=True)
+            
+            # Store embeddings
+            self.tag_embeddings = {}
+            self.tag_to_text = {}
+            for tag, embedding in zip(tag_list, embeddings):
+                self.tag_embeddings[tag] = embedding
+                self.tag_to_text[tag] = tag
+                
+            debug_print(f"Successfully generated embeddings for {len(self.tag_embeddings)} tags")
+        except Exception as e:
+            debug_print(f"Error generating tag embeddings: {e}")
+            self.tag_embeddings = {}
+            self.tag_to_text = {}
+    
+    def semantic_search_tags(self, query: str, limit: int = 10, similarity_threshold: float = 0.3) -> List[Tuple[str, float]]:
+        """Find semantically similar tags using embeddings"""
+        if not self.semantic_model or not self.tag_embeddings:
+            debug_print("Semantic search not available or no tag embeddings found")
+            return []
+            
+        try:
+            # Generate embedding for the query
+            query_embedding = self.semantic_model.encode([query], convert_to_numpy=True)[0]
+            
+            # Calculate cosine similarity with all tags
+            similarities = []
+            for tag, tag_embedding in self.tag_embeddings.items():
+                # Cosine similarity
+                similarity = np.dot(query_embedding, tag_embedding) / (np.linalg.norm(query_embedding) * np.linalg.norm(tag_embedding))
+                if similarity >= similarity_threshold:
+                    similarities.append((tag, float(similarity)))
+            
+            # Sort by similarity (descending)
+            similarities.sort(key=lambda x: x[1], reverse=True)
+            
+            debug_print(f"Found {len(similarities)} semantically similar tags for '{query}'")
+            
+            return similarities[:limit]
+            
+        except Exception as e:
+            debug_print(f"Error in semantic tag search: {e}")
+            return []
     
     def get_by_slug_or_url(self, identifier: str) -> Optional[ContentFile]:
         """Find a post by its slug or URL"""
@@ -426,17 +537,23 @@ content_manager = None
 
 
 @mcp.tool()
-async def get_by_tag(tag: str, limit: int = 50) -> str:
-    """Get blog content by its tag.
+async def get_by_tags(tags: str, limit: int = 50) -> str:
+    """Get blog content by tags (supports multiple tags).
     
     Args:
-        tag: the tag associated with content
+        tags: a single tag or comma-separated list of tags
         limit: the number of results to include
     """
     if content_manager is None:
         return "Content has not been loaded. Please ensure the server is properly initialized."
     
-    matching_content = content_manager.get_by_tag(tag, limit)
+    # Parse comma-separated tags
+    if ',' in tags:
+        tag_list = [tag.strip() for tag in tags.split(',')]
+    else:
+        tag_list = tags.strip()
+    
+    matching_content = content_manager.get_by_tags(tag_list, limit)
     return format_content_for_output(matching_content)
 
 
@@ -486,6 +603,33 @@ async def search_tags(tag_query: str, limit: int = 20) -> str:
     result = [f"Tags matching '{tag_query}':"]
     for tag in matching_tags:
         result.append(f"- {tag}")
+    
+    return "\n".join(result)
+
+
+@mcp.tool()
+async def semantic_similar_tags(query: str, limit: int = 10, threshold: float = 0.3) -> str:
+    """Find semantically similar tags AI embeddings.
+    
+    Args:
+        query: the concept or tag to search for similar tags
+        limit: the maximum number of similar tags to return
+        threshold: minimum similarity score (0-1) to include a tag
+    """
+    if content_manager is None:
+        return "Content has not been loaded. Please ensure the server is properly initialized."
+    
+    if not SEMANTIC_SEARCH_AVAILABLE:
+        return "Semantic search is not available. Please install sentence-transformers: pip install sentence-transformers"
+    
+    similar_tags = content_manager.semantic_search_tags(query, limit, threshold)
+    
+    if not similar_tags:
+        return f"No semantically similar tags found for '{query}'."
+    
+    result = [f"Tags semantically similar to '{query}':"]
+    for tag, similarity in similar_tags:
+        result.append(f"- {tag} (similarity: {similarity:.3f})")
     
     return "\n".join(result)
 
@@ -554,4 +698,4 @@ if __name__ == "__main__":
     content_manager = HugoContentManager(content_dirs)
     debug_print(f"Loaded {len(content_manager.path_to_content)} markdown files")
     
-    mcp.run(transport='stdio')
+    mcp.run(transport='streamable-http')
