@@ -532,7 +532,7 @@ def format_tags_for_output(tags: List[Tuple[str, int, Optional[datetime]]]) -> s
 
 
 # Create MCP server
-mcp = FastMCP("hugo_content")
+mcp = FastMCP("knowledge_base", port=5500, host="0.0.0.0")
 content_manager = None
 
 
